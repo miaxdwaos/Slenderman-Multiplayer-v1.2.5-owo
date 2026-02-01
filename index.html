@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Slender 3D - Multiplayer Fix</title>
+    <title>Slender 3D - Ultra Fix</title>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
         body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', monospace; touch-action: none; }
@@ -34,7 +34,7 @@
             <button class="btn-join" onclick="connectToHost()">UNIRSE AL JUEGO</button>
         </div>
         <button id="start-btn" class="btn-start" onclick="startGame()">INICIAR PARTIDA</button>
-        <div id="status-msg" style="color: #f1c40f; margin-top: 10px;">Crea una partida o únete a una</div>
+        <div id="status-msg" style="color: #f1c40f; margin-top: 10px;">Crea o únete rápidamente</div>
     </div>
 </div>
 
@@ -75,7 +75,7 @@
 
     let posX = 1.5, posY = 1.5;
     let dirX = 1, dirY = 0, planeX = 0, planeY = 0.66;
-    let moveSpeed = 0.07, mouseSensitivity = 0.0025;
+    let moveSpeed = 0.1, mouseSensitivity = 0.003;
 
     peer.on('open', id => {
         myId = id;
@@ -84,31 +84,26 @@
         document.getElementById('start-btn').style.display = 'block'; 
     });
 
-    // Lógica del Servidor (Host)
     peer.on('connection', conn => {
         conn.on('open', () => {
             connections[conn.peer] = conn;
             players[conn.peer] = { x: 1.5, y: 1.5, color: '#e67e22', isDead: false };
-            addChatMessage("Sistema", "Jugador conectado.");
+            addChatMessage("Sistema", "Jugador unido.");
             syncToAll();
         });
-
         conn.on('data', handleData);
-
-        conn.on('close', () => {
-            handleDisconnect(conn.peer);
-        });
+        conn.on('close', () => removePlayer(conn.peer));
+        conn.on('error', () => removePlayer(conn.peer));
     });
 
-    function handleDisconnect(peerId) {
+    function removePlayer(peerId) {
         if (players[peerId]) {
-            addChatMessage("Sistema", "Jugador desconectado.");
             delete connections[peerId];
             delete players[peerId];
+            addChatMessage("Sistema", "Jugador salió. Limpiando fantasmas...");
             
-            // SI SOLO QUEDA EL HOST, TERMINAR
             if (Object.keys(players).length <= 1 && gameStarted) {
-                alert("Partida terminada: Te has quedado solo.");
+                alert("FIN: Todos los jugadores se fueron.");
                 location.reload();
             }
             syncToAll();
@@ -129,11 +124,9 @@
             if(notes[data.index] && !notes[data.index].collected) {
                 notes[data.index].collected = true;
                 notesCollected++;
-                if(notesCollected >= 8) alert("¡OBJETIVO COMPLETADO!");
                 syncToAll();
             }
         } else if (data.type === 'update') {
-            // Sincronización para clientes
             notes = data.notes;
             slenderman = data.slenderman;
             notesCollected = data.notesCollected;
@@ -141,14 +134,10 @@
                 gameStarted = true;
                 document.getElementById('ui').classList.add('hidden');
             }
-            // Limpiar "fantasmas" comparando la lista del host con la local
-            let incomingPlayers = data.players;
-            for(let id in players) {
-                if(id !== myId && !incomingPlayers[id]) delete players[id];
-            }
-            for(let id in incomingPlayers) {
-                if(id !== myId) players[id] = incomingPlayers[id];
-            }
+            // Sincronización instantánea de lista de jugadores activos
+            let incoming = data.players;
+            for(let id in players) if(id !== myId && !incoming[id]) delete players[id];
+            for(let id in incoming) if(id !== myId) players[id] = incoming[id];
         }
     }
 
@@ -158,23 +147,17 @@
         hostConn = peer.connect(hId);
         hostConn.on('open', () => {
             document.getElementById('setup-controls').classList.add('hidden');
-            document.getElementById('status-msg').innerText = "Conectado. Esperando inicio...";
+            document.getElementById('status-msg').innerText = "Conectado. Esperando host...";
             setInterval(() => {
                 if(hostConn.open) hostConn.send({ type: 'move', id: myId, x: posX, y: posY, isDead: isDead });
-            }, 30);
+            }, 20); // Más rápido (50fps de red)
         });
         hostConn.on('data', handleData);
-        hostConn.on('close', () => {
-            alert("El Host ha cerrado la partida.");
-            location.reload();
-        });
+        hostConn.on('close', () => { alert("Host desconectado."); location.reload(); });
     }
 
     function startGame() {
-        if (Object.keys(players).length < 2) {
-            alert("Necesitas al menos otro jugador para iniciar.");
-            return;
-        }
+        if (Object.keys(players).length < 2) return alert("Mínimo 2 jugadores.");
         gameStarted = true;
         document.getElementById('ui').classList.add('hidden');
         notes = [];
@@ -189,15 +172,12 @@
     }
 
     function broadcast(data, exclude = null) {
-        for (let id in connections) {
-            if (connections[id].open && id !== exclude) connections[id].send(data);
-        }
+        for (let id in connections) if (connections[id].open && id !== exclude) connections[id].send(data);
         if (hostConn && hostConn.open && exclude !== 'host') hostConn.send(data);
     }
 
     function syncToAll() {
-        if(hostConn) return; // Solo el host sincroniza el estado global
-        broadcast({ type: 'update', players, notes, slenderman, gameStarted, notesCollected });
+        if(!hostConn) broadcast({ type: 'update', players, notes, slenderman, gameStarted, notesCollected });
     }
 
     function addChatMessage(sender, text) {
@@ -209,15 +189,12 @@
 
     chatInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && chatInput.value.trim() !== "") {
-            const msg = chatInput.value;
-            addChatMessage("Tú", msg);
-            broadcast({ type: 'chat', sender: myId, text: msg });
-            chatInput.value = "";
-            canvas.focus();
+            addChatMessage("Tú", chatInput.value);
+            broadcast({ type: 'chat', sender: myId, text: chatInput.value });
+            chatInput.value = ""; canvas.focus();
         }
     });
 
-    // --- MOTOR RENDER Y MOVIMIENTO (Sin cambios mayores, solo integración) ---
     canvas.addEventListener('click', () => { if(!chatInput.matches(':focus')) canvas.requestPointerLock(); });
 
     document.addEventListener('mousemove', (e) => {
@@ -238,29 +215,23 @@
 
     function handleMovement() {
         if(!gameStarted || isDead) return;
-        let nextX = posX, nextY = posY;
-        if(keys['KeyW']) { nextX += dirX * moveSpeed; nextY += dirY * moveSpeed; }
-        if(keys['KeyS']) { nextX -= dirX * moveSpeed; nextY -= dirY * moveSpeed; }
-        if(keys['KeyA']) { nextX += dirY * moveSpeed; nextY -= dirX * moveSpeed; }
-        if(keys['KeyD']) { nextX -= dirY * moveSpeed; nextY += dirX * moveSpeed; }
-        
-        if(worldMap[Math.floor(nextX)][Math.floor(posY)] === 0) posX = nextX;
-        if(worldMap[Math.floor(posX)][Math.floor(nextY)] === 0) posY = nextY;
+        let step = moveSpeed;
+        if(keys['KeyW']) {
+            if(worldMap[Math.floor(posX + dirX * step)][Math.floor(posY)] === 0) posX += dirX * step;
+            if(worldMap[Math.floor(posX)][Math.floor(posY + dirY * step)] === 0) posY += dirY * step;
+        }
+        if(keys['KeyS']) {
+            if(worldMap[Math.floor(posX - dirX * step)][Math.floor(posY)] === 0) posX -= dirX * step;
+            if(worldMap[Math.floor(posX)][Math.floor(posY - dirY * step)] === 0) posY -= dirY * step;
+        }
 
         if(!hostConn && slenderman.active) {
             let angle = Math.atan2(posY - slenderman.y, posX - slenderman.x);
-            slenderman.x += Math.cos(angle) * 0.022;
-            slenderman.y += Math.sin(angle) * 0.022;
-
+            slenderman.x += Math.cos(angle) * 0.025;
+            slenderman.y += Math.sin(angle) * 0.025;
             if(Math.hypot(posX - slenderman.x, posY - slenderman.y) < 0.4) {
-                if(Object.keys(players).length <= 1) {
-                    alert("Slenderman te atrapó."); location.reload();
-                } else {
-                    isDead = true;
-                    document.getElementById('ui').classList.remove('hidden');
-                    document.getElementById('status-msg').innerText = "MUERTO - MODO ESPECTADOR";
-                    document.exitPointerLock();
-                }
+                if(Object.keys(players).length <= 1) { alert("ATRAPADO."); location.reload(); }
+                else { isDead = true; document.exitPointerLock(); document.getElementById('ui').classList.remove('hidden'); }
             }
             syncToAll();
         }
@@ -274,19 +245,16 @@
     }
 
     function render() {
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
+        canvas.width = window.innerWidth; canvas.height = window.innerHeight;
         const w = canvas.width, h = canvas.height;
-        ctx.fillStyle = "#050505"; ctx.fillRect(0, 0, w, h/2);
-        ctx.fillStyle = "#111"; ctx.fillRect(0, h/2, w, h/2);
+        ctx.fillStyle = "#000"; ctx.fillRect(0, 0, w, h);
 
         if(!gameStarted) {
-            ctx.fillStyle = "white"; ctx.textAlign = "center"; ctx.font = "20px Courier New";
-            ctx.fillText("ESPERANDO JUGADORES...", w/2, h/2);
+            ctx.fillStyle = "white"; ctx.textAlign = "center"; ctx.fillText("ESPERANDO JUGADORES...", w/2, h/2);
             requestAnimationFrame(render); return;
         }
 
-        let zBuffer = new Array(w).fill(0);
+        let zBuffer = new Array(w);
         for(let x = 0; x < w; x++) {
             let cameraX = 2 * x / w - 1;
             let rayDirX = dirX + planeX * cameraX, rayDirY = dirY + planeY * cameraX;
@@ -304,37 +272,30 @@
                 else { sideDistY += deltaY; mapY += stepY; side = 1; }
                 if(worldMap[mapX][mapY] > 0) hit = 1;
             }
-
             let perpDist = (side === 0) ? (sideDistX - deltaX) : (sideDistY - deltaY);
             zBuffer[x] = perpDist;
             let lineHeight = Math.floor(h / perpDist);
-            let b = Math.max(0, 200 - (perpDist * 25));
-            ctx.strokeStyle = `rgb(${side === 1 ? b*0.5 : b},${side === 1 ? b*0.5 : b},${side === 1 ? b*0.5 : b})`;
-            ctx.beginPath(); ctx.moveTo(x, h/2 - lineHeight/2); ctx.lineTo(x, h/2 + lineHeight/2); ctx.stroke();
+            let color = Math.max(0, 180 - (perpDist * 20));
+            ctx.strokeStyle = `rgb(${side?color*0.5:color},${side?color*0.5:color},${side?color*0.5:color})`;
+            ctx.beginPath(); ctx.moveTo(x, h/2-lineHeight/2); ctx.lineTo(x, h/2+lineHeight/2); ctx.stroke();
         }
 
         let sprites = [];
-        notes.forEach(n => { if(!n.collected) sprites.push({ ...n, color: "white", sX: 0.15, sY: 0.2 }); });
-        if(slenderman.active) sprites.push({ ...slenderman, color: "black", sX: 0.5, sY: 1.8, isSlender: true });
-        for(let id in players) {
-            if(id !== myId && !players[id].isDead) sprites.push({ ...players[id], sX: 0.4, sY: 0.6 });
-        }
+        notes.forEach(n => { if(!n.collected) sprites.push({...n, color:"white", sX:0.15, sY:0.2}); });
+        if(slenderman.active) sprites.push({...slenderman, color:"#111", sX:0.5, sY:1.8, isSlender:true});
+        for(let id in players) if(id !== myId && !players[id].isDead) sprites.push({...players[id], sX:0.4, sY:0.6});
 
         sprites.sort((a,b) => Math.hypot(posX-b.x, posY-b.y) - Math.hypot(posX-a.x, posY-a.y));
         sprites.forEach(s => {
             let relX = s.x - posX, relY = s.y - posY;
             let invDet = 1.0 / (planeX * dirY - dirX * planeY);
-            let transX = invDet * (dirY * relX - dirX * relY), transY = invDet * (-planeY * relX + planeX * relY);
-            if(transY > 0.1) {
-                let screenX = Math.floor((w/2) * (1 + transX / transY));
-                let sH = Math.abs(Math.floor(h / transY)) * s.sY, sW = Math.abs(Math.floor(h / transY)) * s.sX;
-                if(screenX > 0 && screenX < w && transY < zBuffer[screenX]) {
+            let tx = invDet * (dirY * relX - dirX * relY), ty = invDet * (-planeY * relX + planeX * relY);
+            if(ty > 0.1) {
+                let sx = Math.floor((w/2) * (1 + tx / ty));
+                let sh = Math.abs(Math.floor(h / ty)) * s.sY, sw = Math.abs(Math.floor(h / ty)) * s.sX;
+                if(sx > 0 && sx < w && ty < zBuffer[sx]) {
                     ctx.fillStyle = s.color || "#e67e22";
-                    ctx.fillRect(screenX - sW/2, h/2 - sH/2, sW, sH);
-                    if(s.isSlender && transY < 3.5 && !isDead) {
-                        ctx.fillStyle = `rgba(255,255,255,${Math.random()*0.2})`;
-                        ctx.fillRect(0,0,w,h);
-                    }
+                    ctx.fillRect(sx - sw/2, h/2 - sh/2, sw, sh);
                 }
             }
         });
